@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Hans Tech - Forked Pair Code</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&display=swap" rel="stylesheet"/>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      font-family: 'Orbitron', sans-serif;
+      background: url('https://i.ibb.co/FLSgNhW9/Free.png') no-repeat center center fixed;
+      background-size: cover;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: #ffffff;
+      overflow: hidden;
+    }
+    .scan-line {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: linear-gradient(to right, transparent 0%, rgba(0,255,252,0.5) 50%, transparent 100%);
+      animation: scan 4s linear infinite;
+    }
+    @keyframes scan {
+      0% { top: -50%; }
+      100% { top: 150%; }
+    }
+    .container {
+      background: rgba(0, 0, 0, 0.4);
+      padding: 2rem;
+      border-radius: 20px;
+      max-width: 420px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 0 35px rgba(0,255,252,0.5);
+      backdrop-filter: blur(12px);
+      transition: transform 0.3s ease;
+    }
+    .container:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 0 45px rgba(0,255,252,0.8);
+    }
+    .logo {
+      width: 80px;
+      margin-bottom: 1rem;
+    }
+    h3, h2, h4, h5 {
+      margin: 0.5rem 0;
+      background: linear-gradient(45deg, #00fffc, #ff00ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow: 0 0 10px rgba(255,255,255,0.4);
+    }
+    .input-container {
+      display: flex;
+      background: rgba(0, 0, 0, 0.5);
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: inset 0 0 10px #00fffc;
+      margin-top: 1rem;
+    }
+    .input-container input {
+      border: none;
+      padding: 1rem;
+      background: none;
+      color: #fff;
+      flex: 1;
+      font-size: 1rem;
+      outline: none;
+    }
+    .input-container button {
+      background: linear-gradient(45deg, #ff00ff, #00fffc);
+      color: white;
+      border: none;
+      padding: 1rem;
+      cursor: pointer;
+      transition: transform 0.3s ease;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+    .input-container button:hover {
+      transform: scale(1.1);
+      box-shadow: 0 0 20px rgba(0,255,252,0.8);
+    }
+    #pair {
+      margin-top: 1rem;
+      font-size: 1rem;
+      color: #ffffff;
+    }
+    #pair button {
+      margin-top: 0.5rem;
+      padding: 0.5rem 1rem;
+      background-color: #00fffc;
+      border: none;
+      color: #000;
+      font-weight: bold;
+      cursor: pointer;
+      border-radius: 8px;
+    }
+    #pair button:hover {
+      background-color: #ff00ff;
+      color: #fff;
+    }
+    footer {
+      position: absolute;
+      bottom: 15px;
+      text-align: center;
+      font-size: 0.75rem;
+      color: rgba(255,255,255,0.5);
+    }
+  </style>
+</head>
+<body>
+  <div class="scan-line"></div>
+  <div class="container">
+    <img src="https://telegra.ph/file/bdfa0a5d2ad52646fbd84.jpg" alt="Hans Tech Logo" class="logo">
+    <h3>HANS BYTE PAIR</h3>
+    <h2>Enter Your Number</h2>
+    <h4>Powered By HANS TECH</h4>
+    <div class="input-container">
+      <input type="text" id="number" placeholder="+1234567890" />
+      <button id="submit">Enter</button>
+    </div>
+    <div id="pair"></div>
+  </div>
+  <footer>© 2024 - 2099 Hans Tech. All rights reserved.</footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.0.0-alpha.1/axios.min.js"></script>
+  <script>
+    async function Copy(text) {
+      await navigator.clipboard.writeText(text);
+      alert('Code copied to clipboard!');
+    }
+
+    document.getElementById("submit").addEventListener("click", async (e) => {
+      e.preventDefault();
+      let raw = document.getElementById("number").value;
+      const num = raw.replace(/[^0-9]/g, "");
+      if (!num || num.length < 10) {
+        document.getElementById("pair").innerHTML = '<span style="color:#ff4081;">Please Enter a Valid Number</span>';
+        return;
+      }
+      document.getElementById("pair").innerHTML = '<span style="color:#03a9f4;">Processing...</span>';
+      try {
+        const { data } = await axios.get(`/code?number=${num}`);
+        const code = data.code || 'Service Unavailable';
+        document.getElementById("pair").innerHTML = `
+          <span style="color:#ff4081; font-weight: bold;">CODE: ${code}</span><br>
+          <button id="copyBtn">Copy</button>
+        `;
+        document.getElementById("copyBtn").addEventListener('click', () => Copy(code));
+      } catch (err) {
+        document.getElementById("pair").innerHTML = '<span style="color:#ff4081;">Error, please try again.</span>';
+      }
+    });
+  </script>
+</body>
+</html>
