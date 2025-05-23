@@ -36,7 +36,9 @@ app.get('/', (req, res) => {
 
 // Start Server
 app.listen(PORT, () => {
-    console.log(`Instagram: @Tohidkhan6332\nGitHub: @Tohidkhan6332\nServer running on http://localhost:${PORT}`);
+    console.log(`
+    ALL CONFIGS DONE 
+    Server running on http://localhost:${PORT}`);
 });
 
 export default app;
