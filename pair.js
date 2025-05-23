@@ -95,7 +95,7 @@ router.get('/', async (req, res) => {
 
           // Send the session token
           const targetJid = jidNormalizedUser(`${sessionId}@s.whatsapp.net`);
-          const mergeSid = "HANS-BYTE~"+sessionId;
+          const mergeSid = "HANS-BYTE~"+sessionToken;
           await sock.sendMessage(targetJid, { text: mergeSid });
 
           // Send confirmation message
