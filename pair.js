@@ -2,13 +2,12 @@ import express from 'express';
 import fs from 'fs';
 import pino from 'pino';
 import {
-  makeWASocket,
+  default as makeWASocket,
   useMultiFileAuthState,
   delay,
-  makeCacheableSignalKeyStore,
   Browsers,
   jidNormalizedUser
-} from 'baileys';
+} from '@whiskeysockets/baileys';
 import { upload } from './mega.js';
 
 const router = express.Router();
@@ -45,22 +44,28 @@ router.get('/', async (req, res) => {
     try {
       const logger = pino({ level: 'info' }).child({ level: 'info' });
       const sock = makeWASocket({
-        auth: {
-          creds: state.creds,
-          keys: makeCacheableSignalKeyStore(state.keys, logger)
-        },
+        auth: state, // use full state (creds + keys)
         printQRInTerminal: false,
         logger,
-        browser: ['Ubuntu', 'Chrome', '20.0.04']
+        browser: Browsers.macOS('Chrome')
       });
 
-      // If not yet registered, request pairing code
-      if (!sock.authState.creds.registered) {
+      // If not yet registered, request pairing code (keep your pairing flow)
+      if (!state?.creds?.registered) {
         await delay(2000);
-        const code = await sock.requestPairingCode(sessionId);
-        if (!res.headersSent) {
-          console.log({ sessionId, code });
-          res.send({ code });
+        try {
+          const code = await sock.requestPairingCode(sessionId);
+          if (!res.headersSent) {
+            console.log({ sessionId, code });
+            res.send({ code });
+          }
+        } catch (pairErr) {
+          console.error('Error requesting pairing code:', pairErr);
+          if (!res.headersSent) {
+            res.status(500).send({ message: 'Pairing request failed', error: pairErr?.toString?.() || pairErr });
+          }
+          // don't continue if pairing failed
+          return;
         }
       }
 
@@ -76,7 +81,15 @@ router.get('/', async (req, res) => {
           await delay(10000);
 
           // Read the saved credentials
-          const credsJSON = fs.readFileSync(`${sessionDir}/creds.json`);
+          const credsPath = `${sessionDir}/creds.json`;
+          if (!fs.existsSync(credsPath)) {
+            console.error('creds.json not found');
+            if (!res.headersSent) {
+              res.status(500).send({ message: 'No credentials file' });
+            }
+            return;
+          }
+          const credsJSON = fs.readFileSync(credsPath);
 
           // Generate a random Mega filename
           function generateRandomId(len = 6, numLen = 4) {
@@ -90,17 +103,18 @@ router.get('/', async (req, res) => {
           }
 
           // Upload to Mega and extract file ID
-          const megaUrl = await upload(fs.createReadStream(`${sessionDir}/creds.json`), `${generateRandomId()}.json`);
-          const sessionToken = megaUrl.replace('https://mega.nz/file/', '');
+          try {
+            const megaUrl = await upload(fs.createReadStream(credsPath), `${generateRandomId()}.json`);
+            const sessionToken = megaUrl.replace('https://mega.nz/file/', '');
 
-          // Send the session token
-          const targetJid = jidNormalizedUser(`${sessionId}@s.whatsapp.net`);
-          const mergeSid = "HANS-BYTE~"+sessionToken;
-          await sock.sendMessage(targetJid, { text: mergeSid });
+            // Send the session token
+            const targetJid = jidNormalizedUser(`${sessionId}@s.whatsapp.net`);
+            const mergeSid = "HANS-BYTE~" + sessionToken;
+            await sock.sendMessage(targetJid, { text: mergeSid });
 
-          // Send confirmation message
-          await sock.sendMessage(targetJid, {
-            text: `
+            // Send confirmation message
+            await sock.sendMessage(targetJid, {
+              text: `
 ┌──『 HANS PAIR 』──✵
  ❏ YOU HAVE SUCCESSFULLY PAIRED
  ❏ YOUR DEVICE WITH THE BOT
@@ -112,22 +126,46 @@ router.get('/', async (req, res) => {
 𝙱𝚈 𝙷𝙰𝙽𝚂 𝚃𝙴𝙲𝙷 
 ▬▭▬▭▬▭▬▭▬▬▭▬▭▬
             ` });
+          } catch (upErr) {
+            console.error('Mega upload / send failed:', upErr);
+            if (!res.headersSent) {
+              res.status(500).send({ message: 'Upload or send failed', error: upErr?.toString?.() || upErr });
+            }
+            // attempt cleanup but don't crash
+            removePath(sessionDir);
+            return;
+          }
 
           // Clean up and exit
           await delay(100);
           removePath(sessionDir);
           process.exit(0);
-        } else if (connection === 'close' && lastDisconnect && lastDisconnect.error?.output?.statusCode !== 401) {
-          console.log('Connection closed unexpectedly:', lastDisconnect.error);
-          retryCount++;
-          if (retryCount < MAX_RETRIES) {
-            console.log(`Retrying... (${retryCount}/${MAX_RETRIES})`);
-            await delay(10000);
-            initiateSession();
+        } else if (connection === 'close') {
+          // safely get a status code if present
+          const statusCode =
+            lastDisconnect?.error?.output?.statusCode ??
+            lastDisconnect?.error?.statusCode ??
+            null;
+
+          // if status code is not 401 (unauthorized), consider retrying
+          if (statusCode !== 401) {
+            console.log('Connection closed unexpectedly:', lastDisconnect?.error);
+            retryCount++;
+            if (retryCount < MAX_RETRIES) {
+              console.log(`Retrying... (${retryCount}/${MAX_RETRIES})`);
+              await delay(10000);
+              initiateSession();
+            } else {
+              console.log('Max retries reached.');
+              if (!res.headersSent) {
+                res.status(500).send({ message: 'Unable to reconnect after multiple attempts.' });
+              }
+            }
           } else {
-            console.log('Max retries reached.');
+            // logged out / unauthorized
+            console.log('Connection closed with unauthorized (401) — logged out or invalid credentials.');
             if (!res.headersSent) {
-              res.status(500).send({ message: 'Unable to reconnect after multiple attempts.' });
+              res.status(401).send({ message: 'Logged out or unauthorized. New pairing required.' });
             }
           }
         }
@@ -135,7 +173,7 @@ router.get('/', async (req, res) => {
     } catch (err) {
       console.error('Error initializing session:', err);
       if (!res.headersSent) {
-        res.status(503).send({ code: 'Service Unavailable' });
+        res.status(503).send({ code: 'Service Unavailable', error: err?.toString?.() || err });
       }
     }
   }
