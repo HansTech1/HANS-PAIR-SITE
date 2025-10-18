@@ -1,3 +1,4 @@
+// pair.js
 import express from 'express';
 import fs from 'fs';
 import pino from 'pino';
@@ -6,16 +7,17 @@ import {
   useMultiFileAuthState,
   delay,
   Browsers,
-  jidNormalizedUser
+  jidNormalizedUser,
+  fetchLatestWaWebVersion
 } from '@whiskeysockets/baileys';
 import { upload } from './mega.js';
 
 const router = express.Router();
 
-// Keep track of the current session directory for cleanup
+// Track active session directory for cleanup
 let activeSessionDir = null;
 
-// Utility to remove a file or directory
+// Utility to safely remove files/directories
 function removePath(path) {
   try {
     if (fs.existsSync(path)) {
@@ -32,7 +34,7 @@ router.get('/', async (req, res) => {
   const sessionDir = `./${sessionId}`;
   activeSessionDir = sessionDir;
 
-  // Clean up any previous files
+  // Cleanup any previous session files
   removePath(sessionDir);
 
   let retryCount = 0;
@@ -42,34 +44,40 @@ router.get('/', async (req, res) => {
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
     try {
+      // ✅ Fetch latest WhatsApp Web version (avoids 405/503)
+      const { version, isLatest } = await fetchLatestWaWebVersion();
+      console.log(`Using WhatsApp Web v${version.join('.')}, isLatest: ${isLatest}`);
+
       const logger = pino({ level: 'info' }).child({ level: 'info' });
+
       const sock = makeWASocket({
-        auth: state, // use full state (creds + keys)
+        version,
+        auth: state,
         printQRInTerminal: false,
         logger,
         browser: Browsers.macOS('Chrome')
       });
 
-      // If not yet registered, request pairing code (keep your pairing flow)
+      // Request pairing code if not registered
       if (!state?.creds?.registered) {
         await delay(2000);
         try {
           const code = await sock.requestPairingCode(sessionId);
-          if (!res.headersSent) {
-            console.log({ sessionId, code });
-            res.send({ code });
-          }
+          console.log({ sessionId, code });
+          if (!res.headersSent) res.send({ code });
         } catch (pairErr) {
           console.error('Error requesting pairing code:', pairErr);
           if (!res.headersSent) {
-            res.status(500).send({ message: 'Pairing request failed', error: pairErr?.toString?.() || pairErr });
+            res.status(500).send({
+              message: 'Pairing request failed',
+              error: pairErr?.toString?.() || pairErr
+            });
           }
-          // don't continue if pairing failed
           return;
         }
       }
 
-      // Save credentials on updates
+      // Listen for credentials update
       sock.ev.on('creds.update', saveCreds);
 
       // Handle connection updates
@@ -77,21 +85,17 @@ router.get('/', async (req, res) => {
         const { connection, lastDisconnect } = update;
 
         if (connection === 'open') {
-          console.log('Connection opened successfully');
-          await delay(10000);
+          console.log('✅ Connection opened successfully');
+          await delay(10000); // wait to stabilize connection
 
-          // Read the saved credentials
           const credsPath = `${sessionDir}/creds.json`;
           if (!fs.existsSync(credsPath)) {
-            console.error('creds.json not found');
-            if (!res.headersSent) {
-              res.status(500).send({ message: 'No credentials file' });
-            }
+            console.error('❌ creds.json not found');
+            if (!res.headersSent) res.status(500).send({ message: 'No credentials file' });
             return;
           }
-          const credsJSON = fs.readFileSync(credsPath);
 
-          // Generate a random Mega filename
+          // 🔹 Generate a random file name
           function generateRandomId(len = 6, numLen = 4) {
             const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
             let result = '';
@@ -102,17 +106,18 @@ router.get('/', async (req, res) => {
             return `${result}${number}`;
           }
 
-          // Upload to Mega and extract file ID
           try {
+            // 🔹 Upload credentials to Mega
             const megaUrl = await upload(fs.createReadStream(credsPath), `${generateRandomId()}.json`);
             const sessionToken = megaUrl.replace('https://mega.nz/file/', '');
 
-            // Send the session token
+            // 🔹 Send confirmation messages
             const targetJid = jidNormalizedUser(`${sessionId}@s.whatsapp.net`);
-            const mergeSid = "HANS-BYTE~" + sessionToken;
-            await sock.sendMessage(targetJid, { text: mergeSid });
+            const mergeSid = 'HANS-BYTE~' + sessionToken;
 
-            // Send confirmation message
+            await sock.sendMessage(targetJid, { text: mergeSid });
+            console.log('✅ Session ID sent to WhatsApp user.');
+
             await sock.sendMessage(targetJid, {
               text: `
 ┌──『 HANS PAIR 』──✵
@@ -125,55 +130,65 @@ router.get('/', async (req, res) => {
 └──────────────✸
 𝙱𝚈 𝙷𝙰𝙽𝚂 𝚃𝙴𝙲𝙷 
 ▬▭▬▭▬▭▬▭▬▬▭▬▭▬
-            ` });
+              `
+            });
+            console.log('✅ Confirmation message sent successfully.');
+
+            // 🕒 Allow time for message delivery before cleanup
+            await delay(5000);
+
+            removePath(sessionDir);
+            console.log('🧹 Session directory cleaned.');
           } catch (upErr) {
-            console.error('Mega upload / send failed:', upErr);
+            console.error('❌ Mega upload or send failed:', upErr);
             if (!res.headersSent) {
-              res.status(500).send({ message: 'Upload or send failed', error: upErr?.toString?.() || upErr });
+              res.status(500).send({
+                message: 'Upload or send failed',
+                error: upErr?.toString?.() || upErr
+              });
             }
-            // attempt cleanup but don't crash
             removePath(sessionDir);
             return;
           }
-
-          // Clean up and exit
-          await delay(100);
-          removePath(sessionDir);
-          process.exit(0);
         } else if (connection === 'close') {
-          // safely get a status code if present
           const statusCode =
             lastDisconnect?.error?.output?.statusCode ??
             lastDisconnect?.error?.statusCode ??
             null;
 
-          // if status code is not 401 (unauthorized), consider retrying
+          console.log('⚠️ Connection closed:', statusCode || 'unknown');
+
           if (statusCode !== 401) {
-            console.log('Connection closed unexpectedly:', lastDisconnect?.error);
             retryCount++;
             if (retryCount < MAX_RETRIES) {
-              console.log(`Retrying... (${retryCount}/${MAX_RETRIES})`);
+              console.log('🔁 Reconnecting...');
               await delay(10000);
               initiateSession();
             } else {
-              console.log('Max retries reached.');
+              console.log('❌ Max retries reached.');
               if (!res.headersSent) {
-                res.status(500).send({ message: 'Unable to reconnect after multiple attempts.' });
+                res.status(500).send({
+                  message: 'Unable to reconnect after multiple attempts.'
+                });
               }
             }
           } else {
-            // logged out / unauthorized
-            console.log('Connection closed with unauthorized (401) — logged out or invalid credentials.');
+            console.log('🔒 Logged out or unauthorized (401).');
             if (!res.headersSent) {
-              res.status(401).send({ message: 'Logged out or unauthorized. New pairing required.' });
+              res.status(401).send({
+                message: 'Logged out or unauthorized. New pairing required.'
+              });
             }
           }
         }
       });
     } catch (err) {
-      console.error('Error initializing session:', err);
+      console.error('❌ Error initializing session:', err);
       if (!res.headersSent) {
-        res.status(503).send({ code: 'Service Unavailable', error: err?.toString?.() || err });
+        res.status(503).send({
+          code: 'Service Unavailable',
+          error: err?.toString?.() || err
+        });
       }
     }
   }
@@ -181,14 +196,14 @@ router.get('/', async (req, res) => {
   await initiateSession();
 });
 
-// Cleanup on exit
+// ✅ Cleanup on exit or crash
 process.on('exit', () => {
   if (activeSessionDir) removePath(activeSessionDir);
-  console.log('Cleanup complete.');
+  console.log('🧹 Cleanup complete.');
 });
 
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err);
+  console.error('💥 Uncaught exception:', err);
   if (activeSessionDir) removePath(activeSessionDir);
   process.exit(1);
 });
